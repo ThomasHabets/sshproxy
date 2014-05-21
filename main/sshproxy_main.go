@@ -70,37 +70,73 @@ func handleConnection(conn net.Conn) {
 		conn.Close()
 	}()
 
+	type keyboardInteractive struct {
+		user, instruction string
+		questions         []string
+		echos             []bool
+		reply             chan []string
+	}
 	var client *ssh.Client
+	authKBI := make(chan keyboardInteractive, 10)
 	config := makeConfig()
-	config.PasswordCallback = func(c ssh.ConnMetadata, pass []byte) (*ssh.Permissions, error) {
-		// Should use constant-time compare (or better, salt+hash) in
-		// a production setting.
-		clientConf := &ssh.ClientConfig{
-			User: c.User(),
-			Auth: []ssh.AuthMethod{
-				ssh.KeyboardInteractive(func(user, instruction string, questions []string, echos []bool) (answers []string, err error) {
-					log.Printf("Interactive: %s, %s, %v, %v", user, instruction, questions, echos)
-					var ans []string
-					for _ = range questions {
-						ans = append(ans, string(pass))
-					}
-					return ans, nil
-				}),
-				ssh.Password(string(pass)),
-			},
-		}
-		var err error
+
+	clientConf := &ssh.ClientConfig{
+		Auth: []ssh.AuthMethod{
+			ssh.KeyboardInteractive(func(user, instruction string, questions []string, echos []bool) (answers []string, err error) {
+				log.Printf("upstream auth: %q %q %v", user, instruction, questions)
+				q := keyboardInteractive{
+					user:        user,
+					instruction: instruction,
+					questions:   questions,
+					echos:       echos,
+					reply:       make(chan []string, 10),
+				}
+				authKBI <- q
+				ans := <-q.reply
+				log.Printf("answering upstream")
+				return ans, nil
+			}),
+		},
+	}
+	var err error
+	clientConnected := make(chan error, 10)
+	userChan := make(chan string, 10)
+	go func() {
+		clientConf.User = <-userChan
+		defer close(clientConnected)
+		defer close(authKBI)
 		client, err = ssh.Dial("tcp", *target, clientConf)
 		if err != nil {
+			clientConnected <- err
 			log.Fatalf("client dial: %v", err)
 		}
-		return nil, nil
+		log.Printf("Client is connected")
+		clientConnected <- nil
+	}()
+	config.KeyboardInteractiveCallback = func(c ssh.ConnMetadata, chal ssh.KeyboardInteractiveChallenge) (*ssh.Permissions, error) {
+		userChan <- c.User()
+		for try := range authKBI {
+			log.Printf("downstream auth: %+v", try)
+			defer close(try.reply)
+			reply, err := chal(try.user, try.instruction, try.questions, try.echos)
+			if err != nil {
+				log.Printf("server chal: %v", err)
+			}
+			log.Printf("got reply from downstream: %v", reply)
+			try.reply <- reply
+		}
+		err = <-clientConnected
+		if err != nil {
+			log.Fatalf("upstream not connected: %v", err)
+		}
+		return nil, err
 	}
 
 	_, channels, reqs, err := ssh.NewServerConn(conn, config)
 	if err != nil {
 		log.Fatalf("Handshake failed: %v", err)
 	}
+
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
