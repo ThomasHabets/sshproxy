@@ -113,6 +113,9 @@ func handleConnection(conn net.Conn) {
 		log.Printf("Client is connected")
 		clientConnected <- nil
 	}()
+	config.AuthLogCallback = func(conn ssh.ConnMetadata, method string, err error) {
+		log.Printf("Attempt: %+v %q %v", conn, method, err)
+	}
 	config.KeyboardInteractiveCallback = func(c ssh.ConnMetadata, chal ssh.KeyboardInteractiveChallenge) (*ssh.Permissions, error) {
 		userChan <- c.User()
 		for try := range authKBI {
