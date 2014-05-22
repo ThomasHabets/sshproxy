@@ -76,45 +76,49 @@ func handleConnection(conn net.Conn) {
 		echos             []bool
 		reply             chan []string
 	}
-	var client *ssh.Client
+	var upstream *ssh.Client
 	authKBI := make(chan keyboardInteractive, 10)
 	config := makeConfig()
 
-	clientConf := &ssh.ClientConfig{
+	ua := ssh.KeyboardInteractive(func(user, instruction string, questions []string, echos []bool) (answers []string, err error) {
+		log.Printf("upstream auth: %q %q %v", user, instruction, questions)
+		q := keyboardInteractive{
+			user:        user,
+			instruction: instruction,
+			questions:   questions,
+			echos:       echos,
+			reply:       make(chan []string, 10),
+		}
+		authKBI <- q
+		ans := <-q.reply
+		log.Printf("answering upstream")
+		return ans, nil
+	})
+
+	upstreamConf := &ssh.ClientConfig{
 		Auth: []ssh.AuthMethod{
-			ssh.KeyboardInteractive(func(user, instruction string, questions []string, echos []bool) (answers []string, err error) {
-				log.Printf("upstream auth: %q %q %v", user, instruction, questions)
-				q := keyboardInteractive{
-					user:        user,
-					instruction: instruction,
-					questions:   questions,
-					echos:       echos,
-					reply:       make(chan []string, 10),
-				}
-				authKBI <- q
-				ans := <-q.reply
-				log.Printf("answering upstream")
-				return ans, nil
-			}),
+			ua,
 		},
 	}
 	var err error
-	clientConnected := make(chan error, 10)
+	upstreamConnected := make(chan error, 10)
 	userChan := make(chan string, 10)
 	go func() {
-		clientConf.User = <-userChan
-		defer close(clientConnected)
+		upstreamConf.User = <-userChan
+		defer close(upstreamConnected)
 		defer close(authKBI)
-		client, err = ssh.Dial("tcp", *target, clientConf)
+		upstream, err = ssh.Dial("tcp", *target, upstreamConf)
 		if err != nil {
-			clientConnected <- err
-			log.Fatalf("client dial: %v", err)
+			upstreamConnected <- err
+			log.Fatalf("upstream dial: %v", err)
 		}
-		log.Printf("Client is connected")
-		clientConnected <- nil
+		log.Printf("upstream is connected")
+		upstreamConnected <- nil
 	}()
 	config.AuthLogCallback = func(conn ssh.ConnMetadata, method string, err error) {
 		log.Printf("Attempt: %+v %q %v", conn, method, err)
+		log.Printf("... server: %s", conn.ServerVersion())
+		log.Printf("... upstream: %s", conn.ClientVersion())
 	}
 	config.KeyboardInteractiveCallback = func(c ssh.ConnMetadata, chal ssh.KeyboardInteractiveChallenge) (*ssh.Permissions, error) {
 		userChan <- c.User()
@@ -128,7 +132,7 @@ func handleConnection(conn net.Conn) {
 			log.Printf("got reply from downstream: %v", reply)
 			try.reply <- reply
 		}
-		err = <-clientConnected
+		err = <-upstreamConnected
 		if err != nil {
 			log.Fatalf("upstream not connected: %v", err)
 		}
@@ -144,8 +148,8 @@ func handleConnection(conn net.Conn) {
 	go func() {
 		defer wg.Done()
 		for req := range reqs {
-			log.Printf("Client->server req: %+v", req)
-			ok, payload, err := client.Conn.SendRequest(req.Type, req.WantReply, req.Payload)
+			log.Printf("downstream->upstream req: %+v", req)
+			ok, payload, err := upstream.Conn.SendRequest(req.Type, req.WantReply, req.Payload)
 			if err != nil {
 				log.Fatalf("request: %v", err)
 			}
@@ -156,7 +160,7 @@ func handleConnection(conn net.Conn) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			handleChannel(client, newChannel)
+			handleChannel(upstream, newChannel)
 		}()
 	}
 }
