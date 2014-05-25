@@ -7,21 +7,32 @@ import (
 	"io/ioutil"
 	"log"
 	"net"
+	"strings"
 	"sync"
 
 	"code.google.com/p/go.crypto/ssh"
 )
 
 var (
-	target  = flag.String("target", "", "SSH server to connect to.")
-	listen  = flag.String("listen", "", "Address to listen to.")
-	keyfile = flag.String("keyfile", "", "SSH server key file.")
+	target        = flag.String("target", "", "SSH server to connect to.")
+	listen        = flag.String("listen", "", "Address to listen to.")
+	keyfile       = flag.String("keyfile", "", "SSH server key file.")
+	clientKeyfile = flag.String("client_keyfile", "", "SSH client key file.")
 
-	privateKey ssh.Signer
+	privateKey       ssh.Signer
+	clientPrivateKey ssh.Signer
 )
 
 func makeConfig() *ssh.ServerConfig {
 	config := &ssh.ServerConfig{}
+	config.AuthLogCallback = func(conn ssh.ConnMetadata, method string, err error) {
+		log.Printf("(%s) Attempt method %s: %v", conn.RemoteAddr(), method, err)
+		log.Printf("... user: %s", conn.User())
+		log.Printf("... session: %v", conn.SessionID())
+		log.Printf("... clientVersion: %s", conn.ClientVersion())
+		log.Printf("... serverVersion: %s", conn.ServerVersion())
+		log.Printf("... localAddr: %v", conn.LocalAddr())
+	}
 	config.AddHostKey(privateKey)
 	return config
 }
@@ -37,6 +48,16 @@ func main() {
 	privateKey, err = ssh.ParsePrivateKey(privateBytes)
 	if err != nil {
 		log.Fatalf("Parse error reading private key %q: %v", *keyfile, err)
+	}
+
+	// Load SSH client key.
+	clientPrivateBytes, err := ioutil.ReadFile(*clientKeyfile)
+	if err != nil {
+		log.Fatalf("Can't read client private key file %q (-client_keyfile).", *clientKeyfile)
+	}
+	clientPrivateKey, err = ssh.ParsePrivateKey(clientPrivateBytes)
+	if err != nil {
+		log.Fatalf("Parse error client reading private key %q: %v", *clientKeyfile, err)
 	}
 
 	if *listen == "" {
@@ -65,24 +86,17 @@ func main() {
 	}
 }
 
-func handleConnection(conn net.Conn) {
-	var wg sync.WaitGroup
-	defer func() {
-		wg.Wait()
-		log.Printf("Connection closed.")
-		conn.Close()
-	}()
+type keyboardInteractive struct {
+	user, instruction string
+	questions         []string
+	echos             []bool
+	reply             chan []string
+}
 
-	type keyboardInteractive struct {
-		user, instruction string
-		questions         []string
-		echos             []bool
-		reply             chan []string
-	}
-	var upstream *ssh.Client
+func handshakeKBI() (<-chan *ssh.Client, *ssh.ServerConfig) {
 	authKBI := make(chan keyboardInteractive, 10)
-	config := makeConfig()
-
+	userChan := make(chan string, 10)
+	upstreamConnected := make(chan error, 10)
 	ua := ssh.KeyboardInteractive(func(user, instruction string, questions []string, echos []bool) (answers []string, err error) {
 		log.Printf("upstream auth: %q %q %v", user, instruction, questions)
 		q := keyboardInteractive{
@@ -103,27 +117,9 @@ func handleConnection(conn net.Conn) {
 			ua,
 		},
 	}
-	var err error
-	upstreamConnected := make(chan error, 10)
-	userChan := make(chan string, 10)
-	go func() {
-		upstreamConf.User = <-userChan
-		defer close(upstreamConnected)
-		defer close(authKBI)
-		upstream, err = ssh.Dial("tcp", *target, upstreamConf)
-		if err != nil {
-			upstreamConnected <- err
-			log.Fatalf("upstream dial: %v", err)
-		}
-		log.Printf("upstream is connected")
-		upstreamConnected <- nil
-	}()
-	config.AuthLogCallback = func(conn ssh.ConnMetadata, method string, err error) {
-		log.Printf("Attempt: %+v %q %v", conn, method, err)
-		log.Printf("... server: %s", conn.ServerVersion())
-		log.Printf("... upstream: %s", conn.ClientVersion())
-	}
-	config.KeyboardInteractiveCallback = func(c ssh.ConnMetadata, chal ssh.KeyboardInteractiveChallenge) (*ssh.Permissions, error) {
+
+	downstreamConf := makeConfig()
+	downstreamConf.KeyboardInteractiveCallback = func(c ssh.ConnMetadata, chal ssh.KeyboardInteractiveChallenge) (*ssh.Permissions, error) {
 		userChan <- c.User()
 		for try := range authKBI {
 			log.Printf("downstream auth: %+v", try)
@@ -135,17 +131,86 @@ func handleConnection(conn net.Conn) {
 			log.Printf("got reply from downstream: %v", reply)
 			try.reply <- reply
 		}
-		err = <-upstreamConnected
-		if err != nil {
+		if err := <-upstreamConnected; err != nil {
 			log.Fatalf("upstream not connected: %v", err)
 		}
-		return nil, err
+		return nil, nil
+	}
+	upstreamChannel := make(chan *ssh.Client)
+	go func() {
+		upstreamConf.User = <-userChan
+		defer close(upstreamChannel)
+		defer close(authKBI)
+		upstream, err := ssh.Dial("tcp", *target, upstreamConf)
+		if err != nil {
+			upstreamConnected <- err
+			log.Fatalf("upstream dial: %v", err)
+		}
+		log.Printf("upstream is connected")
+		upstreamChannel <- upstream
+	}()
+
+	return upstreamChannel, downstreamConf
+}
+
+func handshakeKey() (<-chan *ssh.Client, *ssh.ServerConfig) {
+	upstreamConnected := make(chan error, 10)
+	userChan := make(chan string, 10)
+	downstreamConf := makeConfig()
+	downstreamConf.PublicKeyCallback = func(c ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, error) {
+		thisKey := strings.SplitN(strings.Trim(string(ssh.MarshalAuthorizedKey(key)), "\n"), " ", 3)
+		log.Printf("Public key callback: %q", thisKey)
+		// TODO: certs.
+		d, err := ioutil.ReadFile("authorized_keys")
+		if err != nil {
+			log.Fatal(err)
+		}
+		authOk := false
+		for _, line := range strings.Split(string(d), "\n") {
+			parts := strings.SplitN(line, " ", 3)
+			if parts[0] == thisKey[0] && parts[1] == thisKey[1] {
+				authOk = true
+				break
+			}
+		}
+		if authOk {
+			userChan <- c.User()
+			return nil, nil
+		}
+		return nil, fmt.Errorf("no I don't think so")
 	}
 
-	_, channels, reqs, err := ssh.NewServerConn(conn, config)
+	upstreamConf := &ssh.ClientConfig{
+		Auth: []ssh.AuthMethod{
+			ssh.PublicKeys(clientPrivateKey),
+		},
+	}
+	upstreamChannel := make(chan *ssh.Client)
+	go func() {
+		upstreamConf.User = <-userChan
+		defer close(upstreamChannel)
+		upstream, err := ssh.Dial("tcp", *target, upstreamConf)
+		if err != nil {
+			upstreamConnected <- err
+			log.Fatalf("upstream dial: %v", err)
+		}
+		log.Printf("upstream is connected")
+		upstreamChannel <- upstream
+	}()
+	return upstreamChannel, downstreamConf
+}
+
+func handshake(wg *sync.WaitGroup, conn net.Conn) (<-chan ssh.NewChannel, *ssh.Client, error) {
+	//upstreamChannel, downstreamConf, _ := handshakeKBI()
+	upstreamChannel, downstreamConf := handshakeKey()
+
+	var err error
+
+	_, channels, reqs, err := ssh.NewServerConn(conn, downstreamConf)
 	if err != nil {
 		log.Fatalf("Handshake failed: %v", err)
 	}
+	upstream := <-upstreamChannel
 
 	wg.Add(1)
 	go func() {
@@ -159,6 +224,21 @@ func handleConnection(conn net.Conn) {
 			req.Reply(ok, payload)
 		}
 	}()
+	return channels, upstream, nil
+}
+
+func handleConnection(conn net.Conn) {
+	var wg sync.WaitGroup
+	defer func() {
+		wg.Wait()
+		log.Printf("Connection closed.")
+		conn.Close()
+	}()
+
+	channels, upstream, err := handshake(&wg, conn)
+	if err != nil {
+		log.Fatal(err)
+	}
 	for newChannel := range channels {
 		wg.Add(1)
 		go func() {
@@ -206,7 +286,9 @@ func requestForward(from source, wg *sync.WaitGroup, in <-chan *ssh.Request, fwd
 	for req := range in {
 		log.Printf("req from %s of type %s", from, req.Type)
 		ok, err := fwd.SendRequest(req.Type, req.WantReply, req.Payload)
-		if err != nil {
+		if err == io.EOF {
+			continue
+		} else if err != nil {
 			log.Fatalf("%s fwd.SendRequest(): %v", from, err)
 		}
 		log.Printf("... req ok: %v", ok)
