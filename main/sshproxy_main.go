@@ -2,6 +2,7 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"io"
 	"io/ioutil"
 	"log"
@@ -58,6 +59,8 @@ func main() {
 			log.Printf("accept(): %v", err)
 			continue
 		}
+		// TODO: handle connections in separate processes, so that log.Fatalf() works.
+		// e.g. nConn, err := net.FileListener(os.NewFile(*fileNo, "connection"))
 		go handleConnection(nConn)
 	}
 }
@@ -160,105 +163,95 @@ func handleConnection(conn net.Conn) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			handleChannel(upstream, newChannel)
+			if err := handleChannel(upstream, newChannel); err != nil {
+				log.Printf("handleChannel: %v", err)
+			}
 		}()
 	}
 }
 
-func handleChannel(client *ssh.Client, newChannel ssh.NewChannel) {
+type source string
+
+const (
+	UPSTREAM   source = "upstream"
+	DOWNSTREAM source = "downstream"
+)
+
+func dataForward(from source, wg *sync.WaitGroup, src, dst ssh.Channel) {
+	defer wg.Done()
+	defer dst.Close()
+	for {
+		data := make([]byte, 16)
+		n, err := src.Read(data)
+		if err == io.EOF {
+			break
+		}
+		if n == 0 {
+			continue
+		}
+		if err != nil {
+			log.Fatalf("read from %s: %v", from, err)
+		}
+		if nw, err := dst.Write(data[:n]); err != nil {
+			log.Fatalf("write(%d) of data from %s: %v", n, from, err)
+		} else if nw != n {
+			log.Fatalf("short write %d < %d from %s", nw, n, from)
+		}
+	}
+	log.Printf("closing the one that's NOT %s", from)
+}
+
+func requestForward(from source, wg *sync.WaitGroup, in <-chan *ssh.Request, fwd ssh.Channel) {
+	defer wg.Done()
+	for req := range in {
+		log.Printf("req from %s of type %s", from, req.Type)
+		ok, err := fwd.SendRequest(req.Type, req.WantReply, req.Payload)
+		if err != nil {
+			log.Fatalf("%s fwd.SendRequest(): %v", from, err)
+		}
+		log.Printf("... req ok: %v", ok)
+		req.Reply(ok, nil)
+	}
+}
+
+// handleChannel forwards data and requests between upstream and downstream.
+// It blocks until until channel is closed.
+func handleChannel(upstreamClient *ssh.Client, newChannel ssh.NewChannel) error {
 	log.Printf("Downstream requested new channel of type %s", newChannel.ChannelType())
 
 	var wg sync.WaitGroup
-	defer wg.Wait()
+	okReturn := make(chan bool)
+	okWait := make(chan bool)
+	go func() {
+		<-okWait
+		wg.Wait()
+		okReturn <- true
+	}()
 
 	// Open channel with server.
-	upstream, upstreamRequests, err := client.Conn.OpenChannel(newChannel.ChannelType(), nil)
+	upstream, upstreamRequests, err := upstreamClient.Conn.OpenChannel(newChannel.ChannelType(), nil)
 	if err != nil {
-		log.Printf("upstream chan create failed: %v", err)
 		newChannel.Reject(ssh.UnknownChannelType, "failed")
-		return
+		return fmt.Errorf("upstream chan create failed: %v", err)
 	}
+	defer upstream.Close()
 
 	downstream, downstreamRequests, err := newChannel.Accept()
 	if err != nil {
-		log.Fatalf("downstream: could not accept channel: %v", err)
+		return fmt.Errorf("downstream: could not accept channel: %v", err)
 	}
+	defer downstream.Close()
 
 	// Discard all requests from server.
-	wg.Add(1)
-	go func(in <-chan *ssh.Request) {
-		defer wg.Done()
-		for req := range in {
-			log.Printf("req from upstream of type %s", req.Type)
-			ok, err := downstream.SendRequest(req.Type, req.WantReply, req.Payload)
-			if err != nil {
-				log.Fatalf("downstream.SendRequest(): %v", err)
-			}
-			req.Reply(ok, nil)
-		}
-	}(upstreamRequests)
+	wg.Add(2)
+	go requestForward(UPSTREAM, &wg, upstreamRequests, downstream)
+	go requestForward(DOWNSTREAM, &wg, downstreamRequests, upstream)
 
-	// Handle requests from client.
-	wg.Add(1)
-	go func(in <-chan *ssh.Request) {
-		defer wg.Done()
-		for req := range in {
-			log.Printf("request from downstream of type %s", req.Type)
-			ok, err := upstream.SendRequest(req.Type, req.WantReply, req.Payload)
-			if err != nil {
-				log.Fatalf("upstream.SendRequest(): %v", err)
-			}
-			req.Reply(ok, nil)
-		}
-	}(downstreamRequests)
-
-	// Client -> server.
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		for {
-			data := make([]byte, 16)
-			n, err := downstream.Read(data)
-			if err == io.EOF {
-				break
-			}
-			if n == 0 {
-				continue
-			}
-			if err != nil {
-				log.Fatalf("read from downstream : %v", err)
-			}
-			//log.Printf("data from downstream: %q", data[:n])
-			if _, err := upstream.Write(data[:n]); err != nil {
-				log.Fatalf("write %d upstream: %v", n, err)
-			}
-		}
-		log.Printf("closing downstream")
-	}()
-
-	// server -> client.
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		defer upstream.Close()
-		defer downstream.Close()
-		for {
-			data := make([]byte, 16)
-			n, err := upstream.Read(data)
-			if err == io.EOF {
-				break
-			}
-			if err != nil {
-				log.Fatalf("reading from upstream: %v", err)
-			}
-			if n == 0 {
-				continue
-			}
-			if _, err := downstream.Write(data[:n]); err != nil {
-				log.Fatalf("write %d downstream: %v", n, err)
-			}
-			//log.Printf(": Data on channel: %q", data[:n])
-		}
-		log.Printf("closing upstream")
-	}()
+	// downstream -> upstream.
+	wg.Add(2)
+	go dataForward(DOWNSTREAM, &wg, downstream, upstream)
+	go dataForward(UPSTREAM, &wg, upstream, downstream)
+	okWait <- true
+	<-okReturn
+	return nil
 }
