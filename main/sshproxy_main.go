@@ -7,9 +7,13 @@ import (
 	"io/ioutil"
 	"log"
 	"net"
+	"os"
+	"path"
 	"strings"
 	"sync"
+	"time"
 
+	"code.google.com/p/go-uuid/uuid"
 	"code.google.com/p/go.crypto/ssh"
 )
 
@@ -18,9 +22,14 @@ var (
 	listen        = flag.String("listen", "", "Address to listen to.")
 	keyfile       = flag.String("keyfile", "", "SSH server key file.")
 	clientKeyfile = flag.String("client_keyfile", "", "SSH client key file.")
+	logdir        = flag.String("logdir", ".", "Directory in which to create logs.")
+	logUpstream   = flag.Bool("log_upstream", false, "Log data from upstream (server).")
+	logDownstream = flag.Bool("log_downstream", false, "Log data from downstream (client).")
 
 	privateKey       ssh.Signer
 	clientPrivateKey ssh.Signer
+
+	user string
 )
 
 func makeConfig() *ssh.ServerConfig {
@@ -188,6 +197,7 @@ func handshakeKey() (<-chan *ssh.Client, *ssh.ServerConfig) {
 	upstreamChannel := make(chan *ssh.Client)
 	go func() {
 		upstreamConf.User = <-userChan
+		user = upstreamConf.User
 		defer close(upstreamChannel)
 		upstream, err := ssh.Dial("tcp", *target, upstreamConf)
 		if err != nil {
@@ -241,12 +251,12 @@ func handleConnection(conn net.Conn) {
 	}
 	for newChannel := range channels {
 		wg.Add(1)
-		go func() {
+		go func(newChannel ssh.NewChannel) {
 			defer wg.Done()
-			if err := handleChannel(upstream, newChannel); err != nil {
+			if err := handleChannel(conn, upstream, newChannel); err != nil {
 				log.Printf("handleChannel: %v", err)
 			}
-		}()
+		}(newChannel)
 	}
 }
 
@@ -257,28 +267,55 @@ const (
 	DOWNSTREAM source = "downstream"
 )
 
-func dataForward(from source, wg *sync.WaitGroup, src, dst ssh.Channel) {
-	defer wg.Done()
-	defer dst.Close()
-	for {
-		data := make([]byte, 16)
-		n, err := src.Read(data)
-		if err == io.EOF {
-			break
+func reverseDirection(s source) source {
+	if s == UPSTREAM {
+		return DOWNSTREAM
+	}
+	return UPSTREAM
+}
+
+func reader(from source, src ssh.Channel) <-chan []byte {
+	ch := make(chan []byte)
+	go func() {
+		defer close(ch)
+		for {
+			data := make([]byte, 16)
+			n, err := src.Read(data)
+			if err == io.EOF {
+				break
+			}
+			if n == 0 {
+				continue
+			}
+			if err != nil {
+				log.Fatalf("read from %s: %v", from, err)
+			}
+			ch <- data[:n]
 		}
-		if n == 0 {
-			continue
-		}
-		if err != nil {
-			log.Fatalf("read from %s: %v", from, err)
-		}
+	}()
+	return ch
+}
+
+func writer(from source, dst ssh.Channel, ch <-chan []byte) {
+	for data := range ch {
+		n := len(data)
 		if nw, err := dst.Write(data[:n]); err != nil {
 			log.Fatalf("write(%d) of data from %s: %v", n, from, err)
 		} else if nw != n {
 			log.Fatalf("short write %d < %d from %s", nw, n, from)
 		}
 	}
-	log.Printf("closing the one that's NOT %s", from)
+}
+
+func dataForward(channelId string, from source, wg *sync.WaitGroup, src, dst ssh.Channel) {
+	defer wg.Done()
+	defer dst.Close()
+	ch := reader(from, src)
+	if (from == UPSTREAM && *logUpstream) || (from == DOWNSTREAM && *logDownstream) {
+		ch = dataLogger(fmt.Sprintf("%s.%s", channelId, from), ch)
+	}
+	writer(from, dst, ch)
+	log.Printf("closing %s", reverseDirection(from))
 }
 
 func requestForward(from source, wg *sync.WaitGroup, in <-chan *ssh.Request, fwd ssh.Channel) {
@@ -296,9 +333,37 @@ func requestForward(from source, wg *sync.WaitGroup, in <-chan *ssh.Request, fwd
 	}
 }
 
+func dataLogger(fn string, ch <-chan []byte) <-chan []byte {
+	newCh := make(chan []byte)
+	f, err := os.Create(path.Join(*logdir, fn))
+	if err != nil {
+		log.Fatal(err)
+	}
+	go func() {
+		defer close(newCh)
+		defer f.Close()
+		for data := range ch {
+			newCh <- data
+			f.Write(data)
+		}
+	}()
+	return newCh
+}
+
 // handleChannel forwards data and requests between upstream and downstream.
 // It blocks until until channel is closed.
-func handleChannel(upstreamClient *ssh.Client, newChannel ssh.NewChannel) error {
+func handleChannel(conn net.Conn, upstreamClient *ssh.Client, newChannel ssh.NewChannel) error {
+	channelId := uuid.New()
+	f, err := os.Create(path.Join(*logdir, fmt.Sprintf("%s.meta", channelId)))
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer f.Close()
+	startTime := time.Now()
+	if _, err := f.WriteString(fmt.Sprintf("User: %s\nStartTime: %s\nRemote addr: %s\n", user, startTime, conn.RemoteAddr())); err != nil {
+		log.Fatal(err)
+	}
+
 	log.Printf("Downstream requested new channel of type %s", newChannel.ChannelType())
 
 	var wg sync.WaitGroup
@@ -331,9 +396,14 @@ func handleChannel(upstreamClient *ssh.Client, newChannel ssh.NewChannel) error 
 
 	// downstream -> upstream.
 	wg.Add(2)
-	go dataForward(DOWNSTREAM, &wg, downstream, upstream)
-	go dataForward(UPSTREAM, &wg, upstream, downstream)
+	go dataForward(channelId, DOWNSTREAM, &wg, downstream, upstream)
+	go dataForward(channelId, UPSTREAM, &wg, upstream, downstream)
 	okWait <- true
 	<-okReturn
+
+	n := time.Now()
+	if _, err := f.WriteString(fmt.Sprintf("EndTime: %s\nDuration: %s\n", n, n.Sub(startTime))); err != nil {
+		log.Fatal(err)
+	}
 	return nil
 }
