@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"path"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -19,7 +20,7 @@ import (
 
 var (
 	target        = flag.String("target", "", "SSH server to connect to.")
-	listen        = flag.String("listen", "", "Address to listen to.")
+	connFD        = flag.String("conn_fd", "", "File descriptor to work with.")
 	keyfile       = flag.String("keyfile", "", "SSH server key file.")
 	clientKeyfile = flag.String("client_keyfile", "", "SSH client key file.")
 	logdir        = flag.String("logdir", ".", "Directory in which to create logs.")
@@ -69,30 +70,25 @@ func main() {
 		log.Fatalf("Parse error client reading private key %q: %v", *clientKeyfile, err)
 	}
 
-	if *listen == "" {
-		log.Fatalf("-listen is required.")
+	if *connFD == "" {
+		log.Fatalf("-connFD is required.")
 	}
 
 	if *target == "" {
 		log.Fatalf("-target is required.")
 	}
 
-	listener, err := net.Listen("tcp", *listen)
+	connFDInt, err := strconv.Atoi(*connFD)
 	if err != nil {
-		log.Fatalf("Failed to listen to %q: %v", *listen, err)
+		log.Fatalf("-conn_fd %q is not int: %v", *connFD, err)
 	}
-
-	log.Printf("Ready to accept connections.")
-	for {
-		nConn, err := listener.Accept()
-		if err != nil {
-			log.Printf("accept(): %v", err)
-			continue
-		}
-		// TODO: handle connections in separate processes, so that log.Fatalf() works.
-		// e.g. nConn, err := net.FileListener(os.NewFile(*fileNo, "connection"))
-		go handleConnection(nConn)
+	f := os.NewFile(uintptr(connFDInt), "connection")
+	conn, err := net.FileConn(f)
+	if err != nil {
+		log.Fatalf("Broken FD passed in: %v", err)
 	}
+	f.Close()
+	handleConnection(conn)
 }
 
 type keyboardInteractive struct {
