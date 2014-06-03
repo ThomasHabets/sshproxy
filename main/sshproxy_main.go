@@ -23,7 +23,7 @@ var (
 	connFD        = flag.String("conn_fd", "", "File descriptor to work with.")
 	keyfile       = flag.String("keyfile", "", "SSH server key file.")
 	clientKeyfile = flag.String("client_keyfile", "", "SSH client key file.")
-	logdir        = flag.String("logdir", ".", "Directory in which to create logs.")
+	logdir        = flag.String("logdir", "", "Directory in which to create logs.")
 	logUpstream   = flag.Bool("log_upstream", false, "Log data from upstream (server).")
 	logDownstream = flag.Bool("log_downstream", false, "Log data from downstream (client).")
 
@@ -47,8 +47,20 @@ func makeConfig() *ssh.ServerConfig {
 	return config
 }
 
+func MandatoryFlag(name string) {
+	f := flag.Lookup(name)
+	if f.Value.String() == f.DefValue {
+		log.Fatalf("-%s is mandatory", name)
+	}
+}
+
 func main() {
 	flag.Parse()
+	MandatoryFlag("conn_fd")
+	MandatoryFlag("target")
+	MandatoryFlag("keyfile")
+	MandatoryFlag("client_keyfile")
+	MandatoryFlag("logdir")
 
 	// Load SSH server key.
 	privateBytes, err := ioutil.ReadFile(*keyfile)
@@ -68,14 +80,6 @@ func main() {
 	clientPrivateKey, err = ssh.ParsePrivateKey(clientPrivateBytes)
 	if err != nil {
 		log.Fatalf("Parse error client reading private key %q: %v", *clientKeyfile, err)
-	}
-
-	if *connFD == "" {
-		log.Fatalf("-connFD is required.")
-	}
-
-	if *target == "" {
-		log.Fatalf("-target is required.")
 	}
 
 	connFDInt, err := strconv.Atoi(*connFD)
