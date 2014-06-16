@@ -62,6 +62,7 @@ func (h *HandshakeKey) Handshake(downstreamConf *ssh.ServerConfig, target string
 	}
 
 	upstreamConf := &ssh.ClientConfig{
+		ClientVersion: "SSH-2.0-SSHProxy",
 		Auth: []ssh.AuthMethod{
 			ssh.PublicKeys(h.ClientPrivateKey),
 		},
