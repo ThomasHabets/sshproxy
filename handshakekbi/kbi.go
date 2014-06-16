@@ -13,8 +13,10 @@ type keyboardInteractive struct {
 	reply             chan []string
 }
 
+// HandshakeKBI implements straight forwarding of KeyboardInteractive auth.
 type HandshakeKBI struct{}
 
+// Handshake performs KeyboardInteractive proxy handshake.
 func (k *HandshakeKBI) Handshake(downstreamConf *ssh.ServerConfig, target string) <-chan *ssh.Client {
 	authKBI := make(chan keyboardInteractive, 10)
 	userChan := make(chan string, 10)

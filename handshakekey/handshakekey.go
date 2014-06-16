@@ -9,11 +9,13 @@ import (
 	"code.google.com/p/go.crypto/ssh"
 )
 
+// HandshakeKey implements SSH key auth to proxy, and then uses a differnt local key against the target.
 type HandshakeKey struct {
 	AuthorizedKeys   string
 	ClientPrivateKey ssh.Signer
 }
 
+// Handshake performs the handshake.
 func (h *HandshakeKey) Handshake(downstreamConf *ssh.ServerConfig, target string) <-chan *ssh.Client {
 	var user string
 	upstreamConnected := make(chan error, 10)

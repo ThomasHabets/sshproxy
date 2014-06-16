@@ -39,6 +39,7 @@ var (
 	//user string
 )
 
+// Handshake is the auth type proxied.
 type Handshake interface {
 	Handshake(*ssh.ServerConfig, string) <-chan *ssh.Client
 }
@@ -57,7 +58,7 @@ func makeConfig() *ssh.ServerConfig {
 	return config
 }
 
-func MandatoryFlag(name string) {
+func mandatoryFlag(name string) {
 	f := flag.Lookup(name)
 	if f.Value.String() == f.DefValue {
 		log.Fatalf("-%s is mandatory", name)
@@ -66,14 +67,14 @@ func MandatoryFlag(name string) {
 
 func main() {
 	flag.Parse()
-	MandatoryFlag("conn_fd")
-	MandatoryFlag("target")
-	MandatoryFlag("keyfile")
-	MandatoryFlag("logdir")
+	mandatoryFlag("conn_fd")
+	mandatoryFlag("target")
+	mandatoryFlag("keyfile")
+	mandatoryFlag("logdir")
 
 	if *auth == "key" {
-		MandatoryFlag("authorized_keys")
-		MandatoryFlag("client_keyfile")
+		mandatoryFlag("authorized_keys")
+		mandatoryFlag("client_keyfile")
 		// Load SSH client key.
 		privBytes, err := ioutil.ReadFile(*clientKeyfile)
 		if err != nil {
@@ -171,15 +172,15 @@ func handleConnection(conn net.Conn) {
 type source string
 
 const (
-	UPSTREAM   source = "upstream"
-	DOWNSTREAM source = "downstream"
+	sourceUpstream   source = "upstream"
+	sourceDownstream source = "downstream"
 )
 
 func reverseDirection(s source) source {
-	if s == UPSTREAM {
-		return DOWNSTREAM
+	if s == sourceUpstream {
+		return sourceDownstream
 	}
-	return UPSTREAM
+	return sourceUpstream
 }
 
 func reader(from source, src ssh.Channel) <-chan []byte {
@@ -215,12 +216,12 @@ func writer(from source, dst ssh.Channel, ch <-chan []byte) {
 	}
 }
 
-func dataForward(channelId string, from source, wg *sync.WaitGroup, src, dst ssh.Channel) {
+func dataForward(channelID string, from source, wg *sync.WaitGroup, src, dst ssh.Channel) {
 	defer wg.Done()
 	defer dst.Close()
 	ch := reader(from, src)
-	if (from == UPSTREAM && *logUpstream) || (from == DOWNSTREAM && *logDownstream) {
-		ch = dataLogger(fmt.Sprintf("%s.%s", channelId, from), ch)
+	if (from == sourceUpstream && *logUpstream) || (from == sourceDownstream && *logDownstream) {
+		ch = dataLogger(fmt.Sprintf("%s.%s", channelID, from), ch)
 	}
 	writer(from, dst, ch)
 	log.Printf("closing %s", reverseDirection(from))
@@ -261,8 +262,8 @@ func dataLogger(fn string, ch <-chan []byte) <-chan []byte {
 // handleChannel forwards data and requests between upstream and downstream.
 // It blocks until until channel is closed.
 func handleChannel(conn net.Conn, upstreamClient *ssh.Client, newChannel ssh.NewChannel) error {
-	channelId := uuid.New()
-	f, err := os.Create(path.Join(*logdir, fmt.Sprintf("%s.meta", channelId)))
+	channelID := uuid.New()
+	f, err := os.Create(path.Join(*logdir, fmt.Sprintf("%s.meta", channelID)))
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -299,13 +300,13 @@ func handleChannel(conn net.Conn, upstreamClient *ssh.Client, newChannel ssh.New
 
 	// Discard all requests from server.
 	wg.Add(2)
-	go requestForward(UPSTREAM, &wg, upstreamRequests, downstream)
-	go requestForward(DOWNSTREAM, &wg, downstreamRequests, upstream)
+	go requestForward(sourceUpstream, &wg, upstreamRequests, downstream)
+	go requestForward(sourceDownstream, &wg, downstreamRequests, upstream)
 
 	// downstream -> upstream.
 	wg.Add(2)
-	go dataForward(channelId, DOWNSTREAM, &wg, downstream, upstream)
-	go dataForward(channelId, UPSTREAM, &wg, upstream, downstream)
+	go dataForward(channelID, sourceDownstream, &wg, downstream, upstream)
+	go dataForward(channelID, sourceUpstream, &wg, upstream, downstream)
 	okWait <- true
 	<-okReturn
 
