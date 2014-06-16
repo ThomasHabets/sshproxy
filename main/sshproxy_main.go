@@ -15,6 +15,7 @@ import (
 
 	"code.google.com/p/go-uuid/uuid"
 	"code.google.com/p/go.crypto/ssh"
+	"github.com/ThomasHabets/sshproxy/handshakekbi"
 	"github.com/ThomasHabets/sshproxy/handshakekey"
 )
 
@@ -22,13 +23,18 @@ var (
 	target        = flag.String("target", "", "SSH server to connect to.")
 	connFD        = flag.String("conn_fd", "", "File descriptor to work with.")
 	keyfile       = flag.String("keyfile", "", "SSH server key file.")
-	clientKeyfile = flag.String("client_keyfile", "", "SSH client key file.")
 	logdir        = flag.String("logdir", "", "Directory in which to create logs.")
 	logUpstream   = flag.Bool("log_upstream", false, "Log data from upstream (server).")
 	logDownstream = flag.Bool("log_downstream", false, "Log data from downstream (client).")
 
-	privateKey       ssh.Signer
-	clientPrivateKey ssh.Signer
+	auth = flag.String("auth", "", "Auth mode (key, kbi).")
+
+	// For -auth=key
+	clientKeyfile  = flag.String("client_keyfile", "", "auth=key: SSH client key file.")
+	authorizedKeys = flag.String("authorized_keys", "", "auth=key: Authorized keys for clients.")
+
+	auther     Handshake
+	privateKey ssh.Signer
 
 	//user string
 )
@@ -63,8 +69,31 @@ func main() {
 	MandatoryFlag("conn_fd")
 	MandatoryFlag("target")
 	MandatoryFlag("keyfile")
-	MandatoryFlag("client_keyfile")
 	MandatoryFlag("logdir")
+
+	if *auth == "key" {
+		MandatoryFlag("authorized_keys")
+		MandatoryFlag("client_keyfile")
+		// Load SSH client key.
+		privBytes, err := ioutil.ReadFile(*clientKeyfile)
+		if err != nil {
+			log.Fatalf("Can't read client private key file %q (-client_keyfile).", *clientKeyfile)
+		}
+		priv, err := ssh.ParsePrivateKey(privBytes)
+		if err != nil {
+			log.Fatalf("Parse error client reading private key %q: %v", *clientKeyfile, err)
+		}
+
+		auther = &handshakekey.HandshakeKey{
+			AuthorizedKeys:   *authorizedKeys,
+			ClientPrivateKey: priv,
+		}
+	} else if *auth == "kbi" {
+		auther = &handshakekbi.HandshakeKBI{}
+	} else {
+		fmt.Fprintf(os.Stderr, "Unknown auth mode %q.", *auth)
+		os.Exit(1)
+	}
 
 	// Load SSH server key.
 	privateBytes, err := ioutil.ReadFile(*keyfile)
@@ -74,16 +103,6 @@ func main() {
 	privateKey, err = ssh.ParsePrivateKey(privateBytes)
 	if err != nil {
 		log.Fatalf("Parse error reading private key %q: %v", *keyfile, err)
-	}
-
-	// Load SSH client key.
-	clientPrivateBytes, err := ioutil.ReadFile(*clientKeyfile)
-	if err != nil {
-		log.Fatalf("Can't read client private key file %q (-client_keyfile).", *clientKeyfile)
-	}
-	clientPrivateKey, err = ssh.ParsePrivateKey(clientPrivateBytes)
-	if err != nil {
-		log.Fatalf("Parse error client reading private key %q: %v", *clientKeyfile, err)
 	}
 
 	connFDInt, err := strconv.Atoi(*connFD)
@@ -99,80 +118,9 @@ func main() {
 	handleConnection(conn)
 }
 
-type keyboardInteractive struct {
-	user, instruction string
-	questions         []string
-	echos             []bool
-	reply             chan []string
-}
-
-func handshakeKBI() (<-chan *ssh.Client, *ssh.ServerConfig) {
-	authKBI := make(chan keyboardInteractive, 10)
-	userChan := make(chan string, 10)
-	upstreamConnected := make(chan error, 10)
-	ua := ssh.KeyboardInteractive(func(user, instruction string, questions []string, echos []bool) (answers []string, err error) {
-		log.Printf("upstream auth: %q %q %v", user, instruction, questions)
-		q := keyboardInteractive{
-			user:        user,
-			instruction: instruction,
-			questions:   questions,
-			echos:       echos,
-			reply:       make(chan []string, 10),
-		}
-		authKBI <- q
-		ans := <-q.reply
-		log.Printf("answering upstream")
-		return ans, nil
-	})
-
-	upstreamConf := &ssh.ClientConfig{
-		Auth: []ssh.AuthMethod{
-			ua,
-		},
-	}
-
-	downstreamConf := makeConfig()
-	downstreamConf.KeyboardInteractiveCallback = func(c ssh.ConnMetadata, chal ssh.KeyboardInteractiveChallenge) (*ssh.Permissions, error) {
-		userChan <- c.User()
-		for try := range authKBI {
-			log.Printf("downstream auth: %+v", try)
-			defer close(try.reply)
-			reply, err := chal(try.user, try.instruction, try.questions, try.echos)
-			if err != nil {
-				log.Printf("server chal: %v", err)
-			}
-			log.Printf("got reply from downstream: %v", reply)
-			try.reply <- reply
-		}
-		if err := <-upstreamConnected; err != nil {
-			log.Fatalf("upstream not connected: %v", err)
-		}
-		return nil, nil
-	}
-	upstreamChannel := make(chan *ssh.Client)
-	go func() {
-		upstreamConf.User = <-userChan
-		defer close(upstreamChannel)
-		defer close(authKBI)
-		upstream, err := ssh.Dial("tcp", *target, upstreamConf)
-		if err != nil {
-			upstreamConnected <- err
-			log.Fatalf("upstream dial: %v", err)
-		}
-		log.Printf("upstream is connected")
-		upstreamChannel <- upstream
-	}()
-
-	return upstreamChannel, downstreamConf
-}
-
 func handshake(wg *sync.WaitGroup, conn net.Conn) (<-chan ssh.NewChannel, *ssh.Client, error) {
-	//upstreamChannel, downstreamConf, _ := handshakeKBI()
-	handshake := &handshakekey.HandshakeKey{
-		ClientPrivateKey: clientPrivateKey,
-	}
 	downstreamConf := makeConfig()
-	upstreamChannel := handshake.Handshake(downstreamConf, *target)
+	upstreamChannel := auther.Handshake(downstreamConf, *target)
 
 	var err error
 

@@ -10,6 +10,7 @@ import (
 )
 
 type HandshakeKey struct {
+	AuthorizedKeys   string
 	ClientPrivateKey ssh.Signer
 }
 
@@ -21,7 +22,7 @@ func (h *HandshakeKey) Handshake(downstreamConf *ssh.ServerConfig, target string
 		thisKey := strings.SplitN(strings.Trim(string(ssh.MarshalAuthorizedKey(key)), "\n"), " ", 3)
 		log.Printf("Public key callback: %q", thisKey)
 		// TODO: certs.
-		d, err := ioutil.ReadFile("authorized_keys")
+		d, err := ioutil.ReadFile(h.AuthorizedKeys)
 		if err != nil {
 			log.Fatal(err)
 		}
