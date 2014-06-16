@@ -65,7 +65,7 @@ var (
 	auther     Handshake
 	privateKey ssh.Signer
 
-	//user string
+	user string
 )
 
 // Handshake is the auth type proxied.
@@ -82,6 +82,7 @@ func makeConfig() *ssh.ServerConfig {
 		log.Printf("... clientVersion: %s", conn.ClientVersion())
 		log.Printf("... serverVersion: %s", conn.ServerVersion())
 		log.Printf("... localAddr: %v", conn.LocalAddr())
+		user = conn.User()
 	}
 	config.AddHostKey(privateKey)
 	return config
@@ -298,7 +299,7 @@ func handleChannel(conn net.Conn, upstreamClient *ssh.Client, newChannel ssh.New
 	}
 	defer f.Close()
 	startTime := time.Now()
-	if _, err := f.WriteString(fmt.Sprintf("User: %s\nStartTime: %s\nRemote addr: %s\n", upstreamClient.User(), startTime, conn.RemoteAddr())); err != nil {
+	if _, err := f.WriteString(fmt.Sprintf("User: %s\nStartTime: %s\nRemote addr: %s\n", user, startTime, conn.RemoteAddr())); err != nil {
 		log.Fatal(err)
 	}
 
