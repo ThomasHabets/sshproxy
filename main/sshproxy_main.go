@@ -48,6 +48,7 @@ var (
 	target        = flag.String("target", "", "SSH server to connect to.")
 	connFD        = flag.String("conn_fd", "", "File descriptor to work with.")
 	keyfile       = flag.String("keyfile", "", "SSH server key file.")
+	forwarded     = flag.String("forwarded", "", "Forwarded for. Used by sslserver.")
 	logdir        = flag.String("logdir", "", "Directory in which to create logs.")
 	logUpstream   = flag.Bool("log_upstream", false, "Log data from upstream (server).")
 	logDownstream = flag.Bool("log_downstream", false, "Log data from downstream (client).")
@@ -127,6 +128,7 @@ func main() {
 		Conn:          conn,
 		Auther:        auther,
 		PrivateKey:    privateKey,
+		Forwarded:     *forwarded,
 		LogDir:        *logdir,
 		LogUpstream:   *logUpstream,
 		LogDownstream: *logDownstream,

@@ -75,6 +75,7 @@ func handle(c net.Conn) {
 	log.Printf("Connecting to %s...", l)
 	args := flag.Args()
 	args = append(args, "-conn_fd=3")
+	args = append(args, "-forwarded="+c.RemoteAddr().String())
 	args = append(args, "-target="+l)
 	cmd := exec.Command(args[0], args[1:]...)
 	cmd.Stdout = os.Stdout

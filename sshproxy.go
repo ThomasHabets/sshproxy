@@ -36,6 +36,9 @@ type SSHProxy struct {
 	// Conn is the connection to downstream client.
 	Conn net.Conn
 
+	// Forwarded-for address.
+	Forwarded string
+
 	// Target is the name of the upstream server.
 	Target string
 
@@ -236,7 +239,8 @@ func (p *SSHProxy) handleChannel(conn net.Conn, upstreamClient *ssh.Client, newC
 Target: %s
 StartTime: %s
 Client: %s
-`, p.user, p.Target, startTime, conn.RemoteAddr())); err != nil {
+Forwarded-For: %s
+`, p.user, p.Target, startTime, conn.RemoteAddr(), p.Forwarded)); err != nil {
 		log.Fatal(err)
 	}
 	log.Printf("Downstream requested new channel of type %s", newChannel.ChannelType())
