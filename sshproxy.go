@@ -54,7 +54,10 @@ type SSHProxy struct {
 
 // Handshake is the auth type proxied.
 type Handshake interface {
-	Handshake(*ssh.ServerConfig, string) <-chan *ssh.Client
+	// Handshake handshakes downstream client, and returns a channel where the client object is then sent.
+	// Because this function has to be run *concurrently* with ssh.NewServerConn(), it's never right to
+	// call this synchronously, and the API makes that clear.
+	Handshake(conf *ssh.ServerConfig, target string) <-chan *ssh.Client
 }
 
 func (p *SSHProxy) makeConfig() *ssh.ServerConfig {
@@ -217,16 +220,25 @@ func (p *SSHProxy) dataLogger(fn string, ch <-chan []byte) <-chan []byte {
 // It blocks until until channel is closed.
 func (p *SSHProxy) handleChannel(conn net.Conn, upstreamClient *ssh.Client, newChannel ssh.NewChannel) error {
 	channelID := uuid.New()
+	startTime := time.Now()
 	f, err := os.Create(path.Join(p.LogDir, fmt.Sprintf("%s.meta", channelID)))
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer f.Close()
-	startTime := time.Now()
-	if _, err := f.WriteString(fmt.Sprintf("User: %s\nStartTime: %s\nRemote addr: %s\n", p.user, startTime, conn.RemoteAddr())); err != nil {
+	defer func() {
+		n := time.Now()
+		if _, err := f.WriteString(fmt.Sprintf("EndTime: %s\nDuration: %s\n", n, n.Sub(startTime))); err != nil {
+			log.Fatal(err)
+		}
+		f.Close()
+	}()
+	if _, err := f.WriteString(fmt.Sprintf(`User: %s
+Target: %s
+StartTime: %s
+Client: %s
+`, p.user, p.Target, startTime, conn.RemoteAddr())); err != nil {
 		log.Fatal(err)
 	}
-
 	log.Printf("Downstream requested new channel of type %s", newChannel.ChannelType())
 
 	var wg sync.WaitGroup
@@ -263,10 +275,5 @@ func (p *SSHProxy) handleChannel(conn net.Conn, upstreamClient *ssh.Client, newC
 	go p.dataForward(channelID, sourceUpstream, &wg, upstream, downstream)
 	okWait <- true
 	<-okReturn
-
-	n := time.Now()
-	if _, err := f.WriteString(fmt.Sprintf("EndTime: %s\nDuration: %s\n", n, n.Sub(startTime))); err != nil {
-		log.Fatal(err)
-	}
 	return nil
 }
