@@ -131,5 +131,6 @@ func main() {
 		LogUpstream:   *logUpstream,
 		LogDownstream: *logDownstream,
 	}
+	log.Printf("sshproxy: running...")
 	p.Run()
 }
