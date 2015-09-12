@@ -1,4 +1,8 @@
 // ./listener -listen 0.0.0.0:2022 ./next-program -conn_fd '{}'
+//
+// The point of listener is so that `next-program` doesn't have to
+// handle multiple connections, and can exit on errors.
+// Go doesn't "do" fork within a binary for these purposes.
 package main
 
 /*
