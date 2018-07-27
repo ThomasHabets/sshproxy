@@ -54,6 +54,22 @@ func (sc *sconn) keyboardInteractive(user, instruction string, questions []strin
 	return ans, nil
 }
 
+func (sc *sconn) hostKeyCallback(hostname string, remote net.Addr, key ssh.PublicKey) error {
+	// TODO: check host cert, if present.
+	log.Printf("... Host key %q: %v", hostname, ssh.FingerprintSHA256(key))
+	var k string
+	if err := db.QueryRowContext(
+		context.TODO(),
+		`SELECT pubkey FROM host_keys WHERE target=$1`,
+		sc.target).Scan(&k); err != nil {
+		return fmt.Errorf("getting host key %q: %v", sc.target, err)
+	}
+	if got, want := ssh.FingerprintSHA256(key), k; got != want {
+		return fmt.Errorf("wrong host key. got %q, want %q", got, want)
+	}
+	return nil
+}
+
 // TODO: time out with ctx.
 func (sc *sconn) handleConnection(ctx context.Context) error {
 	sc.cfg.PublicKeyCallback = sc.pubkeyCallback
@@ -70,7 +86,7 @@ func (sc *sconn) handleConnection(ctx context.Context) error {
 		User: sc.user,
 		// Timeout: TODO,
 		// BannerCallback: TODO,
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(), // TODO,
+		HostKeyCallback: sc.hostKeyCallback,
 		Auth: []ssh.AuthMethod{
 			ssh.Password(sc.password),
 			ssh.KeyboardInteractive(sc.keyboardInteractive),
