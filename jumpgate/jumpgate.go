@@ -62,9 +62,11 @@ func main() {
 			conn: conn,
 			cfg:  cfg,
 		}
-		if err := t.handleConnection(ctx); err != nil {
-			log.Errorf("Handling connection: %v", err)
-		}
+		go func() {
+			if err := t.handleConnection(ctx); err != nil {
+				log.Errorf("Handling connection: %v", err)
+			}
+		}()
 	}
 
 }
