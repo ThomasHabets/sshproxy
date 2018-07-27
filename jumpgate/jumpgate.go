@@ -24,6 +24,10 @@ var (
 func main() {
 	flag.Parse()
 
+	if flag.NArg() > 0 {
+		log.Fatalf("Trailing cmdline args: %q", flag.Args())
+	}
+
 	var err error
 	db, err = sql.Open(*dbType, *dbConn)
 	if err != nil {
