@@ -2,25 +2,37 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"flag"
 	"io/ioutil"
 	"net"
 
+	_ "github.com/mattn/go-sqlite3"
 	log "github.com/sirupsen/logrus"
 	"golang.org/x/crypto/ssh"
-)
-
-const (
-	password = "XXXXXXX"
 )
 
 var (
 	addr      = flag.String("addr", ":2022", "Address to listen to.")
 	serverKey = flag.String("server_key", "jumpgate-key", "Server key.")
+	dbType    = flag.String("db_type", "sqlite3", "Database type.")
+	dbConn    = flag.String("db", "", "Database connect string.")
+
+	db *sql.DB
 )
 
 func main() {
 	flag.Parse()
+
+	var err error
+	db, err = sql.Open(*dbType, *dbConn)
+	if err != nil {
+		log.Fatalf("Failed to connect to DB %q %q: %v", *dbType, *dbConn)
+	}
+	if err := db.Ping(); err != nil {
+		log.Fatalf("Failed to ping DB %q %q: %v", *dbType, *dbConn)
+	}
+	defer db.Close()
 
 	l, err := net.Listen("tcp", *addr)
 	if err != nil {
