@@ -80,7 +80,15 @@ func (sc *sconn) handleConnection(ctx context.Context) error {
 	defer conn.Close()
 	log.Infof("... Server connected!")
 
-	// TODO: check ACLs.
+	var n int
+	if err := db.QueryRowContext(
+		ctx,
+		`SELECT 1 FROM acl WHERE pubkey=$1 AND target=$2`,
+		ssh.FingerprintSHA256(sc.key),
+		sc.target).Scan(&n); err != nil {
+		return fmt.Errorf("acl rejects key %q from connecting to %q", ssh.FingerprintSHA256(sc.key), sc.target)
+	}
+
 	log.Infof("... dialing %q", sc.target)
 	sc.client, err = ssh.Dial("tcp", sc.target, &ssh.ClientConfig{
 		User: sc.user,
