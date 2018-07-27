@@ -12,6 +12,11 @@ CREATE TABLE passwords(
        password STRING NOT NULL,
        PRIMARY KEY(target)
 );
+CREATE TABLE acl(
+       pubkey TEXT NOT NULL,
+       target TEXT NOT NULL
+);
+INSERT INTO acl(pubkey, target) VALUES('SHA256:mMmoetnuohunto', 'localhost:22');
 INSERT INTO passwords VALUES('localhost:22', 'password here');
 ^D
 $ ./jumpgate -db jumpgate.sqlite3
