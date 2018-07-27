@@ -14,11 +14,13 @@ type sconn struct {
 	conn net.Conn
 	cfg  ssh.ServerConfig
 
-	target string
-	meta   ssh.ConnMetadata
-	key    ssh.PublicKey
-	user   string
-	client ssh.Conn
+	// Filled in after handshake.
+	password string
+	target   string
+	meta     ssh.ConnMetadata
+	key      ssh.PublicKey
+	user     string
+	client   ssh.Conn
 }
 
 func (sc *sconn) pubkeyCallback(meta ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, error) {
@@ -34,6 +36,12 @@ func (sc *sconn) pubkeyCallback(meta ssh.ConnMetadata, key ssh.PublicKey) (*ssh.
 	sc.key = key
 	sc.user = user
 	sc.target = target
+	if err := db.QueryRowContext(
+		context.TODO(),
+		`SELECT password FROM passwords WHERE target=$1`,
+		target).Scan(&sc.password); err != nil {
+		return nil, fmt.Errorf("getting password for %q: %v", target, err)
+	}
 	return nil, nil
 }
 
@@ -41,7 +49,7 @@ func (sc *sconn) keyboardInteractive(user, instruction string, questions []strin
 	log.Printf("... keyboardinteractive: %q %q %q %v", user, instruction, questions, echos)
 	var ans []string
 	for _ = range questions {
-		ans = append(ans, password)
+		ans = append(ans, sc.password)
 	}
 	return ans, nil
 }
@@ -64,7 +72,7 @@ func (sc *sconn) handleConnection(ctx context.Context) error {
 		// BannerCallback: TODO,
 		HostKeyCallback: ssh.InsecureIgnoreHostKey(), // TODO,
 		Auth: []ssh.AuthMethod{
-			ssh.Password(password),
+			ssh.Password(sc.password),
 			ssh.KeyboardInteractive(sc.keyboardInteractive),
 		},
 	})
