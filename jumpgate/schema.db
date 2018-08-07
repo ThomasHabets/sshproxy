@@ -1,0 +1,18 @@
+CREATE TABLE host_keys(
+       target STRING NOT NULL,
+       pubkey STRING NOT NULL,
+       PRIMARY KEY(target)
+);
+CREATE TABLE passwords(
+       target STRING NOT NULL,
+       password STRING NOT NULL,
+       PRIMARY KEY(target)
+);
+CREATE TABLE acl(
+       pubkey TEXT NOT NULL,
+       target TEXT NOT NULL
+);
+CREATE TABLE cas(
+       pubkey TEXT NOT NULL,
+       target TEXT NOT NULL
+);
