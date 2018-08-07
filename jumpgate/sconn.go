@@ -177,7 +177,7 @@ func (sc *sconn) handleConnection(ctx context.Context) error {
 	sc.client, err = ssh.Dial("tcp", sc.target, &ssh.ClientConfig{
 		User: sc.user,
 		// Timeout: TODO,
-		// BannerCallback: TODO,
+		BannerCallback:  ssh.BannerDisplayStderr(),
 		HostKeyCallback: sc.hostKeyCallback,
 		Auth: []ssh.AuthMethod{
 			ssh.Password(sc.password),
