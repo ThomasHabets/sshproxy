@@ -4,7 +4,7 @@
 $ ssh-keygen -t ed25519 -N "secret CA password" -f ca
 $ ssh-keygen -t ed25519 -f user_key
 $ ssh-keygen -s ca -I thomas-key1 -n thomas,username2 user_key.pub
-$ ssh-keygen -l -f user_key.pub | awk '{print $2}'
+$ ssh-keygen -l -f user_key.pub | awk '{print $2 ""}'
 SHA256:abcabc___user_key_here___abcabc
 ```
 
@@ -16,26 +16,52 @@ $ ssh-keygen -t ed25519 -N '' -f jumpgate-key
 
 ### Set up login database
 
+```
+$ sqlite3 jumpgate.sqlite3 < jumpgate.schema
+```
+
+#### Add host keys
+
 Host keys can be printed from a `known_hosts` with:
 
 ```
-$ ssh-keygen -F router.example.com  -l  | grep -v ^# | awk '{print $3}'
+$ ssh-keygen -F router.example.com  -l  | grep -v ^# | awk '{print $3 "\n" $2}'
 SHA256:abcabc___HOST_key_here___abcabc
+ssh-rsa
 ```
 
 Or on the server with something like:
 
 ```
-ssh-keygen -l -f /etc/ssh/ssh_host_ecdsa_key.pub | awk '{print $2}'
+$ ssh-keygen -l -f /etc/ssh/ssh_host_ecdsa_key.pub | awk '{print $2}'
 SHA256:abcabc___HOST_key_here___abcabc
+$ awk '{print $1}' /etc/ssh/ssh_host_ecdsa_key.pub
+ecdsa-sha2-nistp256
 ```
 
 ```
-$ sqlite3 jumpgate.sqlite3 < jumpgate.schema
 $ sqlite3 jumpgate.sqlite3
 > INSERT INTO host_keys(host, type, pubkey) VALUES('router.example.com:22', 'ssh-rsa', 'SHA256:abcabc___HOST_key_here___abcabc');
+```
+
+#### Add user keys, client CAs, and account passwords
+
+CA fingerprint can be extracted like the host key:
+
+```
+$ ssh-keygen -l -f ca.pub | awk '{print $2}'
+SHA256:abcabc___CA_key_here___abcabc
+$ awk '{print $1}' ca.pub
+ssh-ed25519
+```
+
+```
+$ sqlite3 jumpgate.sqlite3
 > INSERT INTO acl(pubkey, target) VALUES('SHA256:abcabc___user_key_here___abcabc', 'admin@router.example.com:22');
+> INSERT INTO cas(pubkey, target) VALUES('SHA256:abcabc___CA_key_here___abcabc', 'admin@router.example.com:22');
+> INSERT INTO cas(pubkey, target) VALUES('SHA256:abcabc___CA_key_here___abcabc', 'admin@router2.example.com:22');
 > INSERT INTO passwords VALUES('admin@router.example.com:22', 'password here');
+> INSERT INTO passwords VALUES('admin@router2.example.com:22', 'password here');
 ^D
 $ ./jumpgate -db jumpgate.sqlite3
 ```

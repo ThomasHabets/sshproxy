@@ -12,7 +12,3 @@ CREATE TABLE acl(
        pubkey TEXT NOT NULL,
        target TEXT NOT NULL
 );
-CREATE TABLE cas(
-       pubkey TEXT NOT NULL,
-       target TEXT NOT NULL
-);

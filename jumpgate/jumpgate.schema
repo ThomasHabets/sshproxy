@@ -2,7 +2,7 @@ CREATE TABLE host_keys(
        host STRING NOT NULL,
        type STRING NOT NULL,
        pubkey STRING NOT NULL,
-       PRIMARY KEY(host)
+       PRIMARY KEY(host, type)
 );
 CREATE TABLE passwords(
        target STRING NOT NULL,
@@ -10,6 +10,10 @@ CREATE TABLE passwords(
        PRIMARY KEY(target)
 );
 CREATE TABLE acl(
+       pubkey TEXT NOT NULL,
+       target TEXT NOT NULL
+);
+CREATE TABLE cas(
        pubkey TEXT NOT NULL,
        target TEXT NOT NULL
 );
