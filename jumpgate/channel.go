@@ -41,7 +41,7 @@ func (c *channel) run(ctx context.Context) error {
 			errs = append(errs, fmt.Errorf("client->server streaming: %v", err))
 			return
 		}
-		log.Infof("... Channel client->server done")
+		log.Debugf("... Channel client->server done")
 		if err := c.channel.Close(); err != nil {
 			mu.Lock()
 			defer mu.Unlock()
@@ -59,7 +59,7 @@ func (c *channel) run(ctx context.Context) error {
 			errs = append(errs, fmt.Errorf("server->client streaming: %v", err))
 			return
 		}
-		log.Infof("... Channel server->client done")
+		log.Debugf("... Channel server->client done")
 	}()
 
 	var cDone, sDone bool
@@ -71,7 +71,7 @@ func (c *channel) run(ctx context.Context) error {
 				c.req = nil
 				continue
 			}
-			log.Infof("Server request: %v", r)
+			log.Debugf("Server request: %v", r)
 			b, err := c.clientChannel.SendRequest(r.Type, r.WantReply, r.Payload)
 			if err != nil {
 				mu.Lock()
@@ -92,7 +92,7 @@ func (c *channel) run(ctx context.Context) error {
 				c.clientReq = nil
 				continue
 			}
-			log.Infof("Client request: %v", r)
+			log.Debugf("Client request: %v", r)
 			b, err := c.channel.SendRequest(r.Type, r.WantReply, r.Payload)
 			if err != nil {
 				mu.Lock()
@@ -109,7 +109,7 @@ func (c *channel) run(ctx context.Context) error {
 			}
 		}
 	}
-	log.Infof("... Channel closing")
+	log.Debugf("... Channel closing")
 	sem.Acquire(ctx, semAll)
 	var ss []string
 	for _, e := range errs {

@@ -24,31 +24,45 @@ type sconn struct {
 	client   ssh.Conn
 }
 
-func (sc *sconn) pubkeyCallback(meta ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, error) {
-	log.Infof("Pubkey attempt by %s from %s: %v", meta.User(), meta.RemoteAddr().String(), ssh.FingerprintSHA256(key))
-	t := strings.SplitN(meta.User(), "%", 2)
+func user2Target(in string) (string, string, error) {
+	t := strings.SplitN(in, "%", 2)
 	if len(t) < 2 {
-		// TODO: show error message to user
-		return nil, fmt.Errorf("username has wrong format: %q", meta.User())
+		return "", "", fmt.Errorf("username has wrong format: %q", in)
 	}
-	user, host := t[0], t[1]
+	return t[0], t[1], nil
+}
+
+func (sc *sconn) pubkeyCallback(inmeta ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, error) {
+	meta := inmeta.(*decodedConnMetadata)
+	fprint := ssh.FingerprintSHA256(key)
+	log.Infof("Pubkey attempt by %s to %s from %s: %v", meta.User(), meta.host, meta.RemoteAddr().String(), fprint)
+
+	var n int
+	if err := db.QueryRowContext(
+		context.TODO(),
+		`SELECT 1 FROM acl WHERE pubkey=$1 AND target=$2`,
+		fprint,
+		meta.target).Scan(&n); err != nil {
+		return nil, fmt.Errorf("acl rejects key %q from connecting to %q", fprint, meta.target)
+	}
+
 	sc.meta = meta
 	sc.key = key
-	sc.user = user
-	sc.host = host
-	sc.target = strings.Replace(meta.User(), "%", "@", 1)
-	log.Infof("... %q connecting to %q", user, sc.target)
+	sc.user = meta.User()
+	sc.target = meta.target
+	sc.host = meta.host
 	if err := db.QueryRowContext(
 		context.TODO(),
 		`SELECT password FROM passwords WHERE target=$1`,
 		sc.target).Scan(&sc.password); err != nil {
 		return nil, fmt.Errorf("getting password for %q: %v", sc.target, err)
 	}
+	log.Infof("... Accepted pubkey %q for user %q target %q", fprint, meta.User(), sc.target)
 	return nil, nil
 }
 
 func (sc *sconn) keyboardInteractive(user, instruction string, questions []string, echos []bool) (answers []string, err error) {
-	log.Printf("... keyboardinteractive: %q %q %q %v", user, instruction, questions, echos)
+	log.Debugf("... keyboardinteractive: %q %q %q %v", user, instruction, questions, echos)
 	var ans []string
 	for _ = range questions {
 		ans = append(ans, sc.password)
@@ -58,7 +72,7 @@ func (sc *sconn) keyboardInteractive(user, instruction string, questions []strin
 
 func (sc *sconn) hostKeyCallback(hostname string, remote net.Addr, key ssh.PublicKey) error {
 	// TODO: check host cert, if present.
-	log.Printf("... Host key %q: %v", hostname, ssh.FingerprintSHA256(key))
+	log.Debugf("... Host key %q: %v", hostname, ssh.FingerprintSHA256(key))
 	var k string
 	if err := db.QueryRowContext(
 		context.TODO(),
@@ -93,9 +107,91 @@ func (sc *sconn) getAlgos(ctx context.Context) ([]string, error) {
 	return algos, nil
 }
 
+type decodedConnMetadata struct {
+	user   string
+	host   string
+	target string
+	meta   ssh.ConnMetadata
+}
+
+func (m *decodedConnMetadata) User() string {
+	return m.user
+}
+
+// SessionID returns the session hash, also denoted by H.
+func (m *decodedConnMetadata) SessionID() []byte {
+	return m.meta.SessionID()
+}
+
+func (m *decodedConnMetadata) ClientVersion() []byte {
+	return m.meta.ClientVersion()
+}
+
+func (m *decodedConnMetadata) ServerVersion() []byte {
+	return m.meta.ServerVersion()
+}
+
+// RemoteAddr returns the remote address for this connection.
+func (m *decodedConnMetadata) RemoteAddr() net.Addr {
+	return m.meta.RemoteAddr()
+}
+
+// LocalAddr returns the local address for this connection.
+func (m *decodedConnMetadata) LocalAddr() net.Addr {
+	return m.meta.LocalAddr()
+}
+
+func (sc *sconn) certCallback(meta ssh.ConnMetadata, pub ssh.PublicKey) (*ssh.Permissions, error) {
+	user, host, err := user2Target(meta.User())
+	if err != nil {
+		// TODO: show error message to user
+		log.Errorf("bad username %q", meta.User())
+		return nil, err
+	}
+	target := fmt.Sprintf("%s@%s", user, host)
+	checker := ssh.CertChecker{
+		UserKeyFallback: sc.pubkeyCallback,
+		// IsRevoked: TODO,
+		IsUserAuthority: func(ca ssh.PublicKey) bool {
+			cafpr := ssh.FingerprintSHA256(ca)
+			var n int
+			if err := db.QueryRowContext(
+				context.TODO(),
+				`SELECT 1 FROM cas WHERE pubkey=$1 AND target=$2`,
+				cafpr,
+				host).Scan(&n); err != nil {
+				log.Errorf("Unknown CA %q for %q provided", cafpr, host)
+				return false
+			}
+			sc.meta = meta
+			sc.key = pub
+			sc.user = user
+			sc.target = target
+			sc.host = host
+			if err := db.QueryRowContext(
+				context.TODO(),
+				`SELECT password FROM passwords WHERE target=$1`,
+				target).Scan(&sc.password); err != nil {
+				log.Errorf("getting password for %q: %v", target, err)
+				// TODO: show error to user.
+				return false
+			}
+			log.Infof("... Accepted certificate %q using CA %q", ssh.FingerprintSHA256(pub), cafpr)
+			return true
+		},
+	}
+	t := decodedConnMetadata{
+		user:   user,
+		host:   host,
+		meta:   meta,
+		target: target,
+	}
+	return checker.Authenticate(&t, pub)
+}
+
 // TODO: time out with ctx.
 func (sc *sconn) handleConnection(ctx context.Context) error {
-	sc.cfg.PublicKeyCallback = sc.pubkeyCallback
+	sc.cfg.PublicKeyCallback = sc.certCallback
 	conn, chch, requestch, err := ssh.NewServerConn(sc.conn, &sc.cfg)
 	if err != nil {
 		return err
@@ -117,11 +213,11 @@ func (sc *sconn) handleConnection(ctx context.Context) error {
 		return err
 	}
 
-	log.Infof("... dialing %q", sc.target)
+	log.Infof("... dialing %q as user %q", sc.target, sc.user)
 	sc.client, err = ssh.Dial("tcp", sc.host, &ssh.ClientConfig{
 		User: sc.user,
 		// Timeout: TODO,
-		// BannerCallback: TODO,
+		BannerCallback:    ssh.BannerDisplayStderr(),
 		HostKeyAlgorithms: algos,
 		HostKeyCallback:   sc.hostKeyCallback,
 		Auth: []ssh.AuthMethod{
@@ -138,12 +234,12 @@ func (sc *sconn) handleConnection(ctx context.Context) error {
 		select {
 		case nch := <-chch:
 			if nch == nil {
-				log.Infof("... No more channels")
+				log.Debugf("... No more channels")
 				chch = nil
 				chchDone = true
 				continue
 			}
-			log.Infof("... New channel type %q extradata %v", nch.ChannelType(), nch.ExtraData())
+			log.Debugf("... New channel type %q extradata %v", nch.ChannelType(), nch.ExtraData())
 			ch, req, err := nch.Accept()
 			if err != nil {
 				log.Errorf("Failed to accept channel: %v", err)
@@ -162,12 +258,12 @@ func (sc *sconn) handleConnection(ctx context.Context) error {
 			}()
 		case req := <-requestch:
 			if req == nil {
-				log.Infof("... No more requests")
+				log.Debugf("... No more requests")
 				requestch = nil
 				rchDone = true
 				continue
 			}
-			log.Infof("... New connection req: %v", req)
+			log.Debugf("... New connection req: %v", req)
 		}
 	}
 	log.Infof("... Server connection closing")

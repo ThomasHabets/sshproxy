@@ -1,4 +1,3 @@
-
 ### Create CA and a user key
 
 ```
