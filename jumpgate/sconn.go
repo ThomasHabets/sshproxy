@@ -72,6 +72,27 @@ func (sc *sconn) hostKeyCallback(hostname string, remote net.Addr, key ssh.Publi
 	return nil
 }
 
+func (sc *sconn) getAlgos(ctx context.Context) ([]string, error) {
+	rows, err := db.QueryContext(ctx, `SELECT type FROM host_keys WHERE host=$1`, sc.host)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query for host keys: %v", err)
+	}
+	defer rows.Close()
+	var algos []string
+
+	for rows.Next() {
+		var a string
+		if err := rows.Scan(&a); err != nil {
+			return nil, err
+		}
+		algos = append(algos, a)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return algos, nil
+}
+
 // TODO: time out with ctx.
 func (sc *sconn) handleConnection(ctx context.Context) error {
 	sc.cfg.PublicKeyCallback = sc.pubkeyCallback
@@ -91,12 +112,18 @@ func (sc *sconn) handleConnection(ctx context.Context) error {
 		return fmt.Errorf("acl rejects key %q from connecting to %q", ssh.FingerprintSHA256(sc.key), sc.target)
 	}
 
+	algos, err := sc.getAlgos(ctx)
+	if err != nil {
+		return err
+	}
+
 	log.Infof("... dialing %q", sc.target)
 	sc.client, err = ssh.Dial("tcp", sc.host, &ssh.ClientConfig{
 		User: sc.user,
 		// Timeout: TODO,
 		// BannerCallback: TODO,
-		HostKeyCallback: sc.hostKeyCallback,
+		HostKeyAlgorithms: algos,
+		HostKeyCallback:   sc.hostKeyCallback,
 		Auth: []ssh.AuthMethod{
 			ssh.Password(sc.password),
 			ssh.KeyboardInteractive(sc.keyboardInteractive),
