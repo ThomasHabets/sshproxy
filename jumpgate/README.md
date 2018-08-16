@@ -1,3 +1,21 @@
+# Jumpgate
+
+## Purpose
+
+[SSH Certificates](https://blog.habets.se/2011/07/OpenSSH-certificates.html) are
+great, but are not supported by all SSH implementations, nor where they are
+supported are they always configurable. E.g. many IoT devices don't support
+them. Even public key logins are not always supported.
+
+Jumpgate will allow you to set a unique password on all devices, and have a
+jumpgate where you SSH with a certificate or pubkey, and the jumpgate logs in
+for you, using the password it stores.
+
+So you can have good and unique passwords, but with all the benefits of pubkeys
+and CAs, even when the devices themselves don't support them.
+
+## Setup
+
 ### Create CA and a user key
 
 ```
