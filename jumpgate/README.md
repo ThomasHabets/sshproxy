@@ -9,12 +9,18 @@ $ ssh-keygen -l -f user_key.pub | awk '{print $2}'
 SHA256:abcabc___user_key_here___abcabc
 ```
 
+### Create SSH proxy host key
+
+```
+$ ssh-keygen -t ed25519 -N '' -f jumpgate-key
+```
+
 ### Set up login database
 
 Host keys can be printed from a `known_hosts` with:
 
 ```
-ssh-keygen -F router.example.com  -l  | grep -v ^# | awk '{print $3}'
+$ ssh-keygen -F router.example.com  -l  | grep -v ^# | awk '{print $3}'
 SHA256:abcabc___HOST_key_here___abcabc
 ```
 
@@ -33,4 +39,16 @@ $ sqlite3 jumpgate.sqlite3
 > INSERT INTO passwords VALUES('admin@router.example.com:22', 'password here');
 ^D
 $ ./jumpgate -db jumpgate.sqlite3
+```
+
+### Start jumpgate
+
+```
+./jumpgate -db=jumpgate.sqlite3
+```
+
+### Log in to host
+
+```
+ssh -p 2022 admin%router.example.com:22@localhost
 ```
