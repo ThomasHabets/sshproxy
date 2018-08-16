@@ -42,6 +42,7 @@ ecdsa-sha2-nistp256
 ```
 $ sqlite3 jumpgate.sqlite3
 > INSERT INTO host_keys(host, type, pubkey) VALUES('router.example.com:22', 'ssh-rsa', 'SHA256:abcabc___HOST_key_here___abcabc');
+> INSERT INTO host_keys(host, type, pubkey) VALUES('router2.example.com:22', 'ssh-rsa', 'SHA256:abcabc___HOST_key2_here___abcabc');
 ```
 
 #### Add user keys, client CAs, and account passwords
