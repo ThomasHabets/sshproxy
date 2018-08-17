@@ -14,6 +14,9 @@ for you, using the password it stores.
 So you can have good and unique passwords, but with all the benefits of pubkeys
 and CAs, even when the devices themselves don't support them.
 
+Taking all connections through a set of proxies helps auditing and enables
+cutting all new and existing connections instantly.
+
 ## Setup
 
 ### Create CA and a user key
